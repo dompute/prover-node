@@ -32,6 +32,8 @@ pub async fn listen_on(url: &str) -> eyre::Result<()> {
     ));
 
     let mut stream = provider.subscribe_blocks().await?;
+    let mut callbacks = vec![];
+    let mut pub_inputs = vec![];
     while let Some(block) = stream.next().await {
         if let None = block.hash {
             println!("Unexpected error");
@@ -53,23 +55,37 @@ pub async fn listen_on(url: &str) -> eyre::Result<()> {
             let tx: relay::RequestComputingCall =
                 relay::RequestComputingCall::decode(tx.input).unwrap();
 
+            println!("ComputingRequested event sniffered: ");
             println!("program: {:?}", tx.program_contract);
             println!("input: {:?}", tx.input);
             println!("commitment: {:?}", tx.commitment);
 
-            let relay = Relay::new(log.address, signer.clone());
+            callbacks.push(relay::Callback {
+                program_contract: tx.program_contract,
+                input: tx.input,
+                return_data: "0x03".parse().unwrap(),
+            });
+            pub_inputs.push("0x00".parse().unwrap());
 
-            let call = relay.invoke_callback(
-                vec![relay::Callback {
-                    program_contract: tx.program_contract,
-                    input: tx.input,
-                    return_data: "0x03".parse().unwrap(),
-                }],
-                vec!["0x00".parse().unwrap()],
-                "0x00".parse().unwrap(),
-            );
-            call.send().await?;
+            if callbacks.len() >= 3 {
+                println!("=========================================");
+                println!("Batching {} computing requests", callbacks.len());
+                let relay = Relay::new(log.address, signer.clone());
+                let call: ethers::contract::ContractCall<_, _> = relay.invoke_callback(
+                    callbacks.clone(),
+                    pub_inputs.clone(),
+                    "0x00".parse().unwrap(),
+                );
+                let ret = call.send().await?;
+                println!("Callback hash: {:?}", ret.tx_hash());
+                println!("=========================================");
+
+                callbacks.clear();
+                pub_inputs.clear();
+            }
         }
+
+        // batching
     }
 
     Ok(())
